@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+usr/bin/env python3
 import os
 import ssl
 import time
@@ -52,19 +52,3 @@ def main():
 
     print("Downloading db.go...")
     content = fetch_database()
-
-    before, sep, after = content.partition("var titleEntry")
-    if not sep:
-        raise ValueError("Could not locate titleEntry data in downloaded database")
-
-    content = "package main\nimport wiiudownloader \"github.com/Xpl0itU/WiiUDownloader\"\n" + sep + after
-    content = content.replace("[]TitleEntry{", "[]wiiudownloader.TitleEntry{")
-
-    with open(dest_path, "w", encoding="utf-8") as f:
-        f.write(content)
-
-    print(f"Database saved to {dest_path}")
-
-
-if __name__ == "__main__":
-    main()
