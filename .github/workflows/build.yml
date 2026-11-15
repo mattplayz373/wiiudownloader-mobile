@@ -1,8 +1,5 @@
 name: Build Project
 
-permissions:
-  contents: write
-  
 on:
   push:
     branches:
@@ -10,98 +7,123 @@ on:
     tags:
       - 'v*'
   pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
-  build:
+  android:
     runs-on: macos-15
-
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v3
-      with:
-        submodules: recursive
-        fetch-depth: 0
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
 
-    - name: Setup Android NDK
-      uses: nttld/setup-ndk@v1
-      id: setup-ndk
-      with:
-        ndk-version: r29
-        add-to-path: false
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
 
-    - name: Setup golang
-      uses: actions/setup-go@v6
-      with:
-        go-version-file: 'native_lib/go.mod'
+      - name: Setup Android NDK
+        uses: nttld/setup-ndk@v1
+        id: setup-ndk
+        with:
+          ndk-version: r29
+          add-to-path: false
 
-    - name: Setup Flutter SDK
-      uses: flutter-actions/setup-flutter@v4
-      with:
-        channel: stable
-        version: 3.41.3
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: native_lib/go.mod
 
-    - name: Install Flutter dependencies
-      run: flutter pub get
+      - name: Setup Flutter SDK
+        uses: flutter-actions/setup-flutter@v4
+        with:
+          channel: stable
+          version: 3.41.3
 
-    - name: Build Android App
-      run: zsh build_android.sh
-      env:
-        ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+      - name: Install Flutter dependencies
+        run: flutter pub get
 
-    - name: Build iOS App
-      run: zsh build_ios.sh
+      - name: Build Android app
+        run: bash build_android.sh
+        env:
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
 
-    - name: Upload Android APK
-      uses: actions/upload-artifact@v4
-      with:
-        name: "WiiUDownloader Android"
-        path: build/app/outputs/flutter-apk/app-release.apk
+      - name: Upload Android APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: WiiUDownloader Android
+          path: build/app/outputs/flutter-apk/app-release.apk
+          if-no-files-found: error
 
-    - name: Upload iOS ipa
-      uses: actions/upload-artifact@v4
-      with:
-        name: "WiiUDownloader iOS"
-        path: wiiudownloader.ipa
+  ios:
+    runs-on: macos-15
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
 
-  create-release:
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: native_lib/go.mod
+
+      - name: Setup Flutter SDK
+        uses: flutter-actions/setup-flutter@v4
+        with:
+          channel: stable
+          version: 3.41.3
+
+      - name: Install Flutter dependencies
+        run: flutter pub get
+
+      - name: Build iOS app
+        run: bash build_ios.sh
+
+      - name: Upload iOS IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: WiiUDownloader iOS
+          path: wiiudownloader.ipa
+          if-no-files-found: error
+
+  release:
     if: startsWith(github.ref, 'refs/tags/')
-    needs: [build]
+    needs: [android, ios]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
-    - name: Download artifacts
-      uses: actions/download-artifact@v4
-      with:
-        path: ./release-assets
-        merge-multiple: true
-    - name: Display structure of downloaded files
-      run: ls -R ./release-assets
-    - name: Create GitHub Release
-      uses: actions/create-release@v1
-      id: create_release
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        tag_name: ${{ github.ref_name }}
-        release_name: Release ${{ github.ref_name }}
-        draft: false
-        prerelease: false
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
 
-    - name: Upload APK
-      uses: actions/upload-release-asset@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        upload_url: ${{ steps.create_release.outputs.upload_url }}
-        asset_path: ./release-assets/app-release.apk
-        asset_name: WiiUDownloader.apk
-        asset_content_type: application/octet-stream
+      - name: Prepare release files
+        run: |
+          set -euo pipefail
+          ls -R release-assets
+          test -f release-assets/app-release.apk
+          test -f release-assets/wiiudownloader.ipa
+          mv release-assets/app-release.apk release-assets/WiiUDownloader.apk
+          mv release-assets/wiiudownloader.ipa release-assets/WiiUDownloader.ipa
 
-    - name: Upload IPA
-      uses: actions/upload-release-asset@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        upload_url: ${{ steps.create_release.outputs.upload_url }}
-        asset_path: ./release-assets/wiiudownloader.ipa
-        asset_name: WiiUDownloader.ipa
-        asset_content_type: application/octet-stream
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$TAG" \
+            release-assets/WiiUDownloader.apk \
+            release-assets/WiiUDownloader.ipa \
+            --title "Release $TAG" \
+            --generate-notes
