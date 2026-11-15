@@ -5,6 +5,7 @@ The download is retried on transient network failures, validated, and written
 atomically so a failed run can never leave a partial or empty db.go behind.
 TLS certificate verification stays enabled.
 """
+import gzip
 import http.client
 import os
 import sys
@@ -12,9 +13,14 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+import zlib
 
 URL = "https://napi.v10lator.de/db?t=go"
 MARKER = "var titleEntry"
+# The upstream project's current build instructions use 2.2 (with compression);
+# older scripts used 2.1. Alternate between them across retries in case the
+# server only accepts one.
+USER_AGENTS = ["NUSspliBuilder/2.2", "NUSspliBuilder/2.1"]
 DEST_PATH = "db.go"
 TIMEOUT_SECONDS = 30
 MAX_ATTEMPTS = 5
@@ -34,13 +40,25 @@ def is_retryable(exc):
 
 
 def fetch_database():
-    request = urllib.request.Request(URL, headers={"User-Agent": "NUSspliBuilder/2.1"})
     last_error = None
     for attempt in range(1, MAX_ATTEMPTS + 1):
+        user_agent = USER_AGENTS[(attempt - 1) % len(USER_AGENTS)]
+        request = urllib.request.Request(
+            URL,
+            headers={
+                "User-Agent": user_agent,
+                "Accept": "*/*",
+                "Accept-Encoding": "gzip",  # same as `curl --compressed`
+            },
+        )
         try:
-            print(f"Downloading db.go (attempt {attempt}/{MAX_ATTEMPTS})...")
+            print(f"Downloading db.go (attempt {attempt}/{MAX_ATTEMPTS}, {user_agent})...")
             with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS) as response:
-                content = response.read().decode("utf-8")
+                raw = response.read()
+                encoding = response.headers.get("Content-Encoding", "").lower()
+            if encoding == "gzip" or raw[:2] == b"\x1f\x8b":
+                raw = gzip.decompress(raw)
+            content = raw.decode("utf-8")
             if not content.strip():
                 raise ValueError("server returned an empty response")
             if MARKER not in content:
@@ -48,7 +66,11 @@ def fetch_database():
             return content
         except Exception as exc:  # noqa: BLE001 - classified below
             last_error = exc
-            retryable = is_retryable(exc) or isinstance(exc, (ValueError, UnicodeDecodeError))
+            # NOTE: don't add OSError here: HTTPError subclasses it, and a 404
+            # should fail immediately instead of being retried.
+            retryable = is_retryable(exc) or isinstance(
+                exc, (ValueError, UnicodeDecodeError, EOFError, zlib.error)
+            )
             print(f"Attempt {attempt} failed: {exc!r}", file=sys.stderr)
             if not retryable or attempt == MAX_ATTEMPTS:
                 break
